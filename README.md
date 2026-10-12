@@ -432,6 +432,9 @@ All seeded accounts share the default development password:
 # Run from: skyhoch-mini/api
 npm install
 
+# Generate Prisma Client
+npx prisma generate
+
 # Run TypeScript type check
 npm run typecheck
 
@@ -480,8 +483,9 @@ docker compose up -d
 npm install
 cp .env.example .env
 
-# Step 3: Run migrations & seed database
+# Step 3: Generate Prisma Client, run migrations & seed database
 # Run from: skyhoch-mini/api
+npx prisma generate
 npx prisma migrate dev
 npx prisma db seed
 
@@ -1094,10 +1098,11 @@ npm start
 - **Fix**: Run `npx prisma generate` from `skyhoch-mini/api`.
 
 ### 3. Migrations or Seeder Failures
-- **Cause**: Database tables have not been migrated before seeding.
+- **Cause**: Prisma client was not generated or database tables have not been migrated before seeding.
 - **Fix**:
   ```bash
   # Run from: skyhoch-mini/api
+  npx prisma generate
   npx prisma migrate dev
   npx prisma db seed
   ```
