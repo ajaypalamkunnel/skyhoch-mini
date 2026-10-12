@@ -22,7 +22,7 @@ A modular, production-oriented mini-application implementing core educational pl
 14. [Backend Setup & Execution](#14-backend-setup--execution)
 15. [Frontend Setup & Execution](#15-frontend-setup--execution)
 16. [Step-by-Step Running Guide](#16-step-by-step-running-guide)
-17. [Application URLs](#17-application-urls)
+17. [Application URLs (Local & Production)](#17-application-urls-local--production)
 18. [Authentication & Session Lifecycle](#18-authentication--session-lifecycle)
 19. [JWT Design & Security Architecture](#19-jwt-design--security-architecture)
 20. [Role-Based Access Control (RBAC)](#20-role-based-access-control-rbac)
@@ -42,9 +42,10 @@ A modular, production-oriented mini-application implementing core educational pl
 34. [Manual End-to-End Testing Guide](#34-manual-end-to-end-testing-guide)
 35. [Architecture Question 1: Webhook Discrepancy & Out-of-Order Events](#35-architecture-question-1-webhook-discrepancy--out-of-order-events)
 36. [Architecture Question 2: Bunny Stream Signed URL Security & Scraping Prevention](#36-architecture-question-2-bunny-stream-signed-url-security--scraping-prevention)
-37. [Development Commands Reference](#37-development-commands-reference)
-38. [Troubleshooting Guide](#38-troubleshooting-guide)
-39. [Submission Verification Checklist](#39-submission-verification-checklist)
+37. [Production Architecture & Deployment Guide](#37-production-architecture--deployment-guide)
+38. [Development & Operations Commands Reference](#38-development--operations-commands-reference)
+39. [Troubleshooting Guide](#39-troubleshooting-guide)
+40. [Submission & Deployment Verification Checklist](#40-submission--deployment-verification-checklist)
 
 ---
 
@@ -341,6 +342,21 @@ Template contents:
 NEXT_PUBLIC_API_URL=http://localhost:5000
 ```
 
+### Environment Differences & Secret Isolation (Local vs. Production)
+
+Local development and production environments intentionally utilize distinct configurations:
+
+| Parameter / Scope | Local Development Workstation | Production Deployment (Vercel & AWS EC2) | Architecture Rationale & Security Isolation |
+|---|---|---|---|
+| **Frontend API Target (`NEXT_PUBLIC_API_URL`)** | `http://localhost:5000` | `https://skyhoch-mini.vercel.app` (Vercel Origin) | In production, client and server-side calls target the Vercel domain; Next.js rewrites (`/api/*`) proxy requests to the public API origin to guarantee same-origin cookie flows. |
+| **Backend Allowed Origin (`CLIENT_URL`)** | `http://localhost:3000` | `https://skyhoch-mini.vercel.app` | Configured for CORS origin validation and cookie domain allowance. |
+| **Database Connection (`DATABASE_URL`)** | `postgresql://postgres:postgres@localhost:5433/skyhoc` | Private EC2 Docker internal network string | Local connects through mapped host port `5433`. Production connects via private Docker container network inside the EC2 instance. |
+| **Secret Storage & Management** | Local `.env` / `.env.local` files on workstation | Vercel Environment Variables & EC2 secure runtime env | High-entropy production secrets, JWT keys, and database passwords are configured directly in platform secret stores, completely separate from local files. |
+
+> [!IMPORTANT]
+> **Do NOT replace your local environment values with production values.**  
+> Keep `client/.env.local` configured with `NEXT_PUBLIC_API_URL=http://localhost:5000` and `api/.env` with `CLIENT_URL=http://localhost:3000` for all local development and testing. Production configurations are managed separately within Vercel project settings and AWS EC2 runtime environments.
+
 ---
 
 ## 11. Database Migrations (Prisma 7)
@@ -506,14 +522,26 @@ npm start
 
 ---
 
-## 17. Application URLs
+## 17. Application URLs (Local & Production)
 
+### Local Development Access URLs
 | Application Service | Local Access URL | Description |
 |---|---|---|
 | **Next.js Frontend** | `http://localhost:3000` | Landing, Login, Student Dashboard, Admin Courses |
 | **Express Backend API** | `http://localhost:5000` | REST API Server |
 | **API Health Check** | `http://localhost:5000/health` | Returns `{ success: true, message: "Skyhoch API is running" }` |
-| **PostgreSQL Database** | `localhost:5433` | PostgreSQL 17 (DB: `skyhoc`, User: `postgres`) |
+| **PostgreSQL Database** | `localhost:5433` | PostgreSQL 17 (DB: `skyhoc`, User: `postgres`, Port: `5433`) |
+
+### Verified Live Production Deployment URLs
+| Service Component | Live Production URL | Hosting Platform & Network Notes |
+|---|---|---|
+| **Production Frontend** | [`https://skyhoch-mini.vercel.app`](https://skyhoch-mini.vercel.app) | Deployed on Vercel (Next.js 16 App Router) |
+| **Public API Origin** | [`https://3.26.131.202.nip.io`](https://3.26.131.202.nip.io) | Hosted on AWS EC2 (proxied via Nginx HTTPS) |
+| **Production API Health Check** | [`https://3.26.131.202.nip.io/health`](https://3.26.131.202.nip.io/health) | Returns `{ "success": true, "message": "Skyhoch API is running" }` |
+| **Rewritten API Gateway** | `https://skyhoch-mini.vercel.app/api/*` | Vercel rewrites proxying requests to public API origin |
+| **PostgreSQL Database** | *Private / Internal Only* | Runs in Docker on EC2 with persistent storage; not exposed to public internet |
+
+*(For full architecture details, request-flow diagrams, and operational commands, see [Section 37: Production Architecture & Deployment Guide](#37-production-architecture--deployment-guide).)*
 
 ---
 
@@ -790,7 +818,10 @@ npm run test
 The Next.js App Router frontend implements **Server-Side Authentication** without exposing tokens to client-side scripts:
 
 1. **Server Component Auth (`getCurrentUser()`)**:
-   [`skyhoch-mini/client/src/lib/auth/server-auth.ts`](client/src/lib/auth/server-auth.ts) uses `next/headers` to read the incoming `access_token` cookie and sends a server-to-server request to `http://localhost:5000/api/auth/me`. Wrapped in React `cache()` for request deduplication.
+   [`skyhoch-mini/client/src/lib/auth/server-auth.ts`](client/src/lib/auth/server-auth.ts) uses `next/headers` to read incoming `httpOnly` cookie headers and forwards them in a server-to-server request to `${env.apiUrl}/api/auth/me`.
+   - **Local Development**: `${env.apiUrl}` points directly to `http://localhost:5000`.
+   - **Production Deployment**: `${env.apiUrl}` is configured to the Vercel origin (`https://skyhoch-mini.vercel.app`), which routes via Next.js `/api/*` rewrites to the public EC2 API (`https://3.26.131.202.nip.io`). This architecture guarantees that browser cookies remain same-origin, eliminating cross-site cookie blocking and CORS preflight overhead.
+   - Wrapped in React `cache()` for per-request deduplication across Server Components.
 2. **Next.js Edge Middleware (`middleware.ts`)**:
    [`skyhoch-mini/client/src/middleware.ts`](client/src/middleware.ts) inspects access token expiration for protected routes. If the access token is expired but a refresh token is present, it transparently calls `POST /api/auth/refresh`, attaches the newly rotated cookies to the request/response headers, and prevents session dropouts.
 3. **Server-Side Role Guard (`requireRole()`)**:
@@ -1001,9 +1032,225 @@ Offenders face warnings and then suspension under the terms of use.
 
 ---
 
-## 37. Development Commands Reference
+## 37. Production Architecture & Deployment Guide
 
-### Root Directory (`skyhoch-mini/`)
+This section documents the live production architecture, continuous integration pipeline, and operational rollout procedures for Skyhoch Mini.
+
+### Production Infrastructure Overview
+
+The production system is deployed across **Vercel** and **AWS EC2**, leveraging containerization, reverse proxying, and automated container image publishing:
+
+| Component | Technology & Hosting Platform | Verified Production Host / Endpoint | Network & Security Architecture |
+|---|---|---|---|
+| **Frontend Web App** | Next.js 16 (App Router) on **Vercel** | [`https://skyhoch-mini.vercel.app`](https://skyhoch-mini.vercel.app) | Global Edge CDN; executes Server Components and handles client UI. |
+| **Reverse Proxy & TLS** | Nginx on **AWS EC2** | [`https://3.26.131.202.nip.io`](https://3.26.131.202.nip.io) | Listens on port 443 with TLS certificates; terminates HTTPS and proxies to the local Docker API container. |
+| **Backend API** | Express 5 & TypeScript in **Docker** | Port 5000 (Internal to EC2 localhost) | Containerized Node.js service; internal port is not publicly exposed to the internet. |
+| **Database** | PostgreSQL 17 in **Docker** | Port 5432 (Internal Docker Network) | Runs in container with persistent host storage volume (`postgres_data`); completely shielded from public internet. |
+| **Container Registry** | GitHub Packages / **GHCR** | `ghcr.io/<repository-owner>/api` | Stores immutable versioned and tagged (`latest`, `sha`) backend Docker images. |
+| **CI / CD Pipeline** | **GitHub Actions** | `.github/workflows/main.yml` | Automatically builds and pushes Docker images to GHCR on changes to `main`. |
+
+---
+
+### Production Request-Flow Architecture
+
+```mermaid
+graph LR
+    Browser["1. Browser<br>(End User)"] -->|"HTTPS<br>Same-Origin Cookies"| Vercel["2. Vercel Frontend<br>skyhoch-mini.vercel.app"]
+    Vercel -->|"Next.js Rewrite<br>/api/*"| Nginx["3. Nginx Reverse Proxy<br>3.26.131.202.nip.io:443 (HTTPS)"]
+    Nginx -->|"Local Proxy Pass<br>http://127.0.0.1:5000"| API["4. Docker API Container<br>Express / Node.js"]
+    API -->|"Internal Bridge Network<br>Port 5432"| DB[("5. Docker PostgreSQL<br>Persistent Volume")]
+```
+
+#### Component Roles & Communication Mechanics:
+1. **End-User Browser**: Interacts with the frontend over secure HTTPS. All cookie headers (`access_token`, `refresh_token` with `httpOnly; SameSite=Lax`) are issued and bound to the Vercel domain.
+2. **Vercel Frontend (Next.js)**: Serves static and dynamic web pages. For API interactions, Next.js handles two communication paths:
+   - **Client-Side Requests**: Routed to `/api/*` on the same Vercel origin. The `next.config.ts` rewrite transparently proxies `/api/:path*` to `https://3.26.131.202.nip.io/api/:path*`.
+   - **Server-Side Requests (`getCurrentUser()`)**: Server Components and Edge Middleware evaluate `${env.apiUrl}/api/...` using the production environment variable.
+3. **Nginx Reverse Proxy & HTTPS Termination (AWS EC2)**:
+   - Receives inbound public traffic exclusively on HTTPS port 443 via `https://3.26.131.202.nip.io`.
+   - Terminates TLS/SSL encryption and enforces secure HTTP protocol headers.
+   - Forwards decrypted HTTP traffic locally to `http://127.0.0.1:5000` on the EC2 loopback interface.
+4. **Docker API Container (Express 5 & TypeScript)**:
+   - Runs the compiled backend application (`node dist/server.js`) inside an isolated Alpine Linux container.
+   - Port 5000 is bound strictly to `127.0.0.1:5000` (or an internal Docker bridge), ensuring it cannot be reached directly from the public internet.
+   - Evaluates JWT signatures, enforces RBAC middleware, runs attendance interval algebra, and communicates with the database.
+5. **PostgreSQL Database Container**:
+   - Runs in Docker on EC2 with data persisted to host storage.
+   - Port 5432 is not exposed to the public internet; only containers residing on the private internal Docker network or host bridge can connect.
+
+---
+
+### Environment Configuration & Same-Origin Cookie Flow
+
+#### Why Next.js Rewrites are Essential in Production
+In modern web browsers, cross-origin cookies between distinct domains (e.g., from `vercel.app` to a separate IP/domain) are subject to stringent Third-Party Cookie blocking, CORS preflight checks (`OPTIONS`), and strict `SameSite` constraints.
+
+To eliminate cross-origin authentication failures:
+- In production, `NEXT_PUBLIC_API_URL` is set to the Vercel deployment origin (`https://skyhoch-mini.vercel.app`).
+- The Next.js configuration in [`client/next.config.ts`](client/next.config.ts) defines an asynchronous rewrite rule:
+  ```typescript
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "https://3.26.131.202.nip.io/api/:path*",
+      },
+    ];
+  }
+  ```
+- **Benefit**: The browser issues requests directly to `https://skyhoch-mini.vercel.app/api/...`. Because this is **same-origin**, the browser seamlessly dispatches and stores the `httpOnly` authentication cookies without CORS headers or third-party cookie restrictions.
+
+#### Secret Isolation & Security Rules
+- **Separate Production Secrets**: Production JWT secrets, database credentials, and session salts are configured exclusively within Vercel's Environment Variables panel and the EC2 server's protected `.env` runtime environment.
+- **No Shared Credentials**: Local development defaults (`Skyhoc@123`, `skyhoch_dev_access_secret_...`) are strictly forbidden in production.
+- **No Production Overwrites**: Developers must **not** copy production values into local `.env` or `.env.local` files. Local workstations must remain configured with `http://localhost:5000` and `http://localhost:3000`.
+
+---
+
+### Database Migrations: Local vs. Production
+
+Understanding the difference between development and production migration commands is critical to preventing accidental data loss:
+
+| Characteristic | `npx prisma migrate dev` (Local Development) | `npx prisma migrate deploy` (Production Deployment) |
+|---|---|---|
+| **Intended Environment** | Local Developer Workstation | Staging & Production Servers |
+| **New Migration Creation** | Detects schema diffs and generates new SQL files in `prisma/migrations/`. | **Never creates migrations.** Strictly applies pre-existing SQL files. |
+| **Schema Drift & Resets** | Detects drift and prompts to reset/drop database if history deviates. | **Never prompts or resets.** Fails immediately if an inconsistency occurs. |
+| **Seeding Execution** | Automatically runs `prisma.seed` if configured. | **Never runs seeders.** Does not populate or overwrite data. |
+| **Prisma Client Generation** | Runs `prisma generate` automatically. | Does not generate client automatically (client is baked into Docker image during build). |
+| **Execution Context** | Executed directly from terminal on developer workstation. | Executed inside the running production API Docker container on EC2. |
+
+> [!CAUTION]
+> **Never run `npx prisma migrate dev` in production.**  
+> Running `migrate dev` on a production database can trigger unexpected schema prompts or full database resets. Always use `npx prisma migrate deploy` for production rollouts.
+
+---
+
+### Step-by-Step Production Deployment Workflow
+
+Deploying a backend update follows a reliable, multi-stage procedure combining automated CI publishing with an intentional, manual EC2 server rollout.
+
+> [!IMPORTANT]
+> **Pushing to GitHub does NOT automatically update the EC2 server.**  
+> GitHub Actions builds and pushes the container image to GitHub Container Registry (GHCR). Deploying the image to the EC2 host and running database migrations is a deliberate manual step performed by an authorized administrator.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / Engineer
+    participant GH as GitHub (main branch)
+    participant GHA as GitHub Actions CI
+    participant GHCR as GitHub Container Registry
+    actor Ops as Administrator (SSH)
+    participant EC2 as AWS EC2 Host
+    participant API as Docker API Container
+    participant DB as Docker PostgreSQL
+
+    Dev->>GH: Push commit to main (api/**)
+    GH->>GHA: Trigger .github/workflows/main.yml
+    GHA->>GHA: Run Docker Buildx & compile TypeScript
+    GHA->>GHCR: Push ghcr.io/<owner>/api:latest & :sha
+    GHA-->>Dev: Workflow Completed (Green check)
+
+    Note over Ops,EC2: Manual Rollout Phase:
+    Ops->>EC2: SSH into EC2 server using authorized key
+    Ops->>DB: Execute pg_dump pre-deployment backup
+    Ops->>GHCR: docker pull ghcr.io/<owner>/api:latest
+    Ops->>API: Execute npx prisma migrate deploy inside container
+    Ops->>API: Restart / recreate container with latest image
+    Ops->>EC2: Verify logs & curl https://3.26.131.202.nip.io/health
+```
+
+#### Step 1: Push Backend Changes to `main`
+Push verified code changes to the `main` branch:
+```bash
+# Run from: local repository
+git checkout main
+git merge <feature-branch>
+git push origin main
+```
+
+#### Step 2: Verify GitHub Actions Workflow Run
+1. Open the repository on GitHub and navigate to **Actions**.
+2. Confirm the **"Build and Publish API Docker Image"** workflow completes successfully.
+3. Verify that the image is published to GHCR under packages (`ghcr.io/<repository-owner>/skyhoch-mini/api:latest`).
+
+#### Step 3: Connect to the AWS EC2 Instance via SSH
+Connect securely using your administrative SSH private key:
+```bash
+# Run from: your administrative terminal
+ssh -i <path-to-authorized-key>.pem <ec2-user>@<ec2-ip-or-host>
+```
+
+#### Step 4: Back Up the Production Database
+Always capture a snapshot of the PostgreSQL database before performing any container or migration changes:
+```bash
+# Run from: EC2 host terminal
+docker exec <postgres-container-name> pg_dump -U <db-user> -d <db-name> > ~/backups/backup_$(date +%Y%m%d_%H%M%S).sql
+```
+*(Verify that the generated backup file has non-zero size before proceeding).*
+
+#### Step 5: Pull the Latest Docker Image from GHCR
+Authenticate with GHCR and pull the newly published image:
+```bash
+# Run from: EC2 host terminal
+echo <github-token> | docker login ghcr.io -u <github-username> --password-stdin
+docker pull ghcr.io/<repository-owner>/skyhoch-mini/api:latest
+```
+
+#### Step 6: Apply Pending Prisma Migrations
+Apply any new database schema migrations safely using `prisma migrate deploy`:
+```bash
+# Run from: EC2 host terminal (using existing API container or temporary runner)
+docker exec <api-container-name> npx prisma migrate deploy
+```
+
+#### Step 7: Restart / Recreate the API Container
+Recreate the container with the newly pulled image while preserving environment variables and networking:
+```bash
+# Run from: EC2 host terminal
+# Stop and remove the existing container
+docker stop <api-container-name>
+docker rm <api-container-name>
+
+# Launch the updated container (bound locally to port 5000)
+docker run -d \
+  --name <api-container-name> \
+  --restart unless-stopped \
+  --network <docker-network-name> \
+  --env-file <path-to-production-.env> \
+  -p 127.0.0.1:5000:5000 \
+  ghcr.io/<repository-owner>/skyhoch-mini/api:latest
+```
+
+#### Step 8: Verify Container Health & Services
+Confirm that the deployment succeeded:
+```bash
+# Check container status
+docker ps
+
+# Inspect recent application logs
+docker logs --tail 50 <api-container-name>
+
+# Test the public HTTPS health endpoint via Nginx
+curl -f https://3.26.131.202.nip.io/health
+```
+Expected response:
+```json
+{
+  "success": true,
+  "message": "Skyhoch API is running"
+}
+```
+Finally, open [`https://skyhoch-mini.vercel.app`](https://skyhoch-mini.vercel.app) in your browser and verify end-to-end authentication and dashboard functionality.
+
+---
+
+## 38. Development & Operations Commands Reference
+
+### Local Development Commands
+
+#### Root Directory (`skyhoch-mini/`)
 ```bash
 # Start PostgreSQL container
 # Run from: skyhoch-mini
@@ -1022,7 +1269,7 @@ docker compose logs postgres
 docker compose down
 ```
 
-### Backend Directory (`skyhoch-mini/api/`)
+#### Backend Directory (`skyhoch-mini/api/`)
 ```bash
 # Install backend dependencies
 # Run from: skyhoch-mini/api
@@ -1036,7 +1283,7 @@ npm run typecheck
 # Run from: skyhoch-mini/api
 npm run test
 
-# Run Prisma 7 migration
+# Run Prisma 7 migration (Local development only)
 # Run from: skyhoch-mini/api
 npx prisma migrate dev
 
@@ -1061,7 +1308,7 @@ npm run build
 npm start
 ```
 
-### Frontend Directory (`skyhoch-mini/client/`)
+#### Frontend Directory (`skyhoch-mini/client/`)
 ```bash
 # Install frontend dependencies & configure env
 # Run from: skyhoch-mini/client
@@ -1085,11 +1332,36 @@ npm run build
 npm start
 ```
 
+### Production Operations Commands (EC2 / Docker)
+
+```bash
+# Connect to EC2 server
+ssh -i <path-to-key>.pem <ec2-user>@<ec2-ip>
+
+# Back up production database
+docker exec <postgres-container-name> pg_dump -U <db-user> -d <db-name> > ~/backups/backup_$(date +%Y%m%d_%H%M%S).sql
+
+# Pull updated API container image
+docker pull ghcr.io/<repository-owner>/skyhoch-mini/api:latest
+
+# Run production Prisma migrations inside container
+docker exec <api-container-name> npx prisma migrate deploy
+
+# Check container status on EC2
+docker ps
+
+# Inspect API container logs
+docker logs --tail 100 -f <api-container-name>
+
+# Test local HTTPS endpoint
+curl -f https://3.26.131.202.nip.io/health
+```
+
 ---
 
-## 38. Troubleshooting Guide
+## 39. Troubleshooting Guide
 
-### 1. PostgreSQL Connection Refused on Port 5433
+### 1. PostgreSQL Connection Refused on Port 5433 (Local Development)
 - **Cause**: Docker container is stopped or port 5433 is in use.
 - **Fix**: Run `docker compose ps` from `skyhoch-mini`. Verify `skyhoc-postgres` is `Up`. Ensure `api/.env` has `DATABASE_URL="postgresql://postgres:postgres@localhost:5433/skyhoc"`.
 
@@ -1097,7 +1369,7 @@ npm start
 - **Cause**: `npx prisma generate` has not been run after cloning or modifying models.
 - **Fix**: Run `npx prisma generate` from `skyhoch-mini/api`.
 
-### 3. Migrations or Seeder Failures
+### 3. Migrations or Seeder Failures (Local Development)
 - **Cause**: Prisma client was not generated or database tables have not been migrated before seeding.
 - **Fix**:
   ```bash
@@ -1108,17 +1380,30 @@ npm start
   ```
 
 ### 4. CORS Errors on Client Requests
-- **Cause**: Express `CLIENT_URL` does not match the Next.js port.
-- **Fix**: Verify `CLIENT_URL=http://localhost:3000` in `api/.env` and restart the backend.
+- **Cause**: Express `CLIENT_URL` does not match the frontend origin.
+- **Fix**:
+  - In local development: Verify `CLIENT_URL=http://localhost:3000` in `api/.env` and restart the backend.
+  - In production: Verify `CLIENT_URL=https://skyhoch-mini.vercel.app` on the EC2 server and ensure requests route via the Next.js rewrite.
 
 ### 5. Authentication Cookies Not Transmitted
-- **Cause**: Browser accessing frontend on `127.0.0.1` while backend cookie was set on `localhost`.
-- **Fix**: Always access the application via `http://localhost:3000`.
+- **Cause**: Browser accessing frontend on `127.0.0.1` while backend cookie was set on `localhost`, or cross-origin cookies blocked.
+- **Fix**:
+  - In local development: Always access the application via `http://localhost:3000`.
+  - In production: Access via `https://skyhoch-mini.vercel.app`, allowing Next.js rewrites to proxy `/api/*` within the same origin.
+
+### 6. Production Nginx 502 Bad Gateway
+- **Cause**: The API Docker container on EC2 is stopped or failed to bind to `127.0.0.1:5000`.
+- **Fix**: Run `docker ps` on the EC2 host. Check `docker logs <api-container-name>`. Verify the container is listening on port 5000.
+
+### 7. Production Prisma Migration Failed
+- **Cause**: Schema drift or manual database changes conflict with migration SQL files.
+- **Fix**: Check `docker exec <api-container-name> npx prisma migrate status` to identify conflicting migration records before attempting fixes.
 
 ---
 
-## 39. Submission Verification Checklist
+## 40. Submission & Deployment Verification Checklist
 
+### Local Development Verification
 - [x] **Repository Clones Cleanly**: Cloned and verified from source.
 - [x] **Docker PostgreSQL Starts**: Verified on port `5433` (DB: `skyhoc`, container: `skyhoc-postgres`).
 - [x] **Environment Variables Documented**: Clean templates in `api/.env.example` and `client/.env.example`.
@@ -1135,8 +1420,17 @@ npm start
 - [x] **Admin Courses Protected**: `STUDENT`/`TUTOR` receive `403 Forbidden`; `DEPARTMENT_HEAD`/`SUPER_ADMIN` receive course data.
 - [x] **Server-Side Cookie Verification**: Next.js Server Components verifying auth server-to-server.
 - [x] **Responsive Mobile Layout**: Validated across mobile and desktop breakpoints.
-- [x] ** Architecture Questions Answered**: Comprehensive sections on webhooks and Bunny Stream.
+- [x] **Architecture Questions Answered**: Comprehensive sections on webhooks and Bunny Stream.
 - [x] **Zero Application Code Modified**: Integrity of all existing codebase files preserved.
+
+### Production Deployment Verification
+- [x] **Live Frontend Deployed**: Verified at [`https://skyhoch-mini.vercel.app`](https://skyhoch-mini.vercel.app).
+- [x] **Live Backend API Deployed**: Verified at [`https://3.26.131.202.nip.io`](https://3.26.131.202.nip.io).
+- [x] **HTTPS Termination Verified**: Nginx proxies incoming TLS traffic to the Docker API container.
+- [x] **Same-Origin API Rewrite**: Next.js rewrites `/api/*` to avoid cross-origin cookie issues.
+- [x] **CI/CD Image Publishing**: GitHub Actions workflow publishes Docker images to GHCR.
+- [x] **Production Migration Path Documented**: `npx prisma migrate deploy` documented for safe production deployment.
+- [x] **Database & Port Shielding**: PostgreSQL and internal API ports protected from public internet exposure.
 
 ---
 
