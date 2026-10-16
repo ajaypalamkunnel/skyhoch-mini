@@ -5,6 +5,7 @@ import { seedUsers } from "./seeders/user.seeder";
 import { seedCourses } from "./seeders/course.seeder";
 import { seedEnrollments } from "./seeders/enrollment.seeder";
 import { seedLiveClasses } from "./seeders/live-class.seeder";
+import { seedFutureLiveClasses } from "./seeders/future-live-classes.seeder";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
@@ -17,7 +18,8 @@ async function main() {
   await seedCourses(prisma);
   await seedEnrollments(prisma);
   await seedLiveClasses(prisma);
-  
+  await seedFutureLiveClasses(prisma);
+
 
   console.log("✓ Database seeding completed");
 }
